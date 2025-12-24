@@ -1,0 +1,436 @@
+import os
+import subprocess
+import platform
+import winreg
+from pptx import Presentation # type: ignore
+import webbrowser
+
+GENERATED_DIR = "generated_code"
+os.makedirs(GENERATED_DIR, exist_ok=True)
+
+# Common app mappings
+APP_MAPPINGS = {
+    "whatsapp": ["WhatsApp", "whatsapp.exe"],
+    "spotify": ["spotify.exe", "Spotify"],
+    "discord": ["discord.exe", "Discord"],
+    "telegram": ["telegram.exe", "Telegram"],
+    "chrome": ["chrome.exe", "Google Chrome"],
+    "firefox": ["firefox.exe", "Mozilla Firefox"],
+    "edge": ["msedge.exe", "Microsoft Edge"],
+    "notepad": ["notepad.exe"],
+    "calculator": ["calc.exe", "Calculator"],
+    "word": ["winword.exe", "Microsoft Word"],
+    "excel": ["excel.exe", "Microsoft Excel"],
+    "powerpoint": ["powerpnt.exe", "Microsoft PowerPoint"],
+    "file manager": ["explorer.exe"],
+    "explorer": ["explorer.exe"],
+    "microsoft store": ["ms-windows-store://"],  # UWP protocol
+    "store": ["ms-windows-store://"],
+}
+
+def find_app_in_registry():
+    """Get all installed apps from registry"""
+    installed_apps = {}
+    
+    paths = [
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+    ]
+    
+    for path in paths:
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as key:
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    try:
+                        subkey_name = winreg.EnumKey(key, i)
+                        with winreg.OpenKey(key, subkey_name) as subkey:
+                            try:
+                                display_name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                                installed_apps[display_name.lower()] = display_name
+                            except:
+                                pass
+                    except:
+                        pass
+        except:
+            pass
+    
+    return installed_apps
+
+def find_uwp_app(app_name):
+    """Find UWP app using PowerShell"""
+    app_lower = app_name.lower()
+    
+    try:
+        # Use PowerShell to get installed UWP apps
+        ps_command = "Get-AppxPackage | Select-Object Name, InstallLocation"
+        result = subprocess.run(
+            ["powershell", "-Command", ps_command],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode == 0:
+            output = result.stdout.lower()
+            if app_lower in output:
+                # Found a match - try to get the full app info
+                ps_command2 = f"Get-AppxPackage | Where-Object {{$_.Name -like '*{app_name}*'}} | Select-Object -First 1"
+                result2 = subprocess.run(
+                    ["powershell", "-Command", ps_command2],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if result2.returncode == 0 and result2.stdout.strip():
+                    print(f"Found UWP app: {result2.stdout.strip()[:100]}")
+                    return "uwp"  # Indicator that it's a UWP app
+    except Exception as e:
+        print(f"UWP search failed: {e}")
+    
+    return None
+
+def find_app_executable(app_name):
+    """Find app executable from various sources"""
+    app_name_lower = app_name.lower().strip()
+    
+    # Check for UWP apps first (WhatsApp, Telegram, etc.)
+    if find_uwp_app(app_name):
+        print(f"Found {app_name} as UWP app")
+        return "uwp:" + app_name_lower
+    
+    # Check mappings first
+    if app_name_lower in APP_MAPPINGS:
+        for variant in APP_MAPPINGS[app_name_lower]:
+            # If it starts with ms-windows, it's a UWP protocol
+            if variant.startswith("ms-windows"):
+                return variant
+            
+            # Try direct launch
+            try:
+                result = subprocess.run(['where', variant], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    path = result.stdout.strip().split('\n')[0]
+                    if path:
+                        return path
+            except:
+                pass
+    
+    # Try 'where' command for PATH apps
+    try:
+        result = subprocess.run(['where', app_name_lower], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            path = result.stdout.strip().split('\n')[0]
+            if path:
+                return path
+    except:
+        pass
+    
+    # Try with .exe extension
+    try:
+        result = subprocess.run(['where', app_name_lower + '.exe'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            path = result.stdout.strip().split('\n')[0]
+            if path:
+                return path
+    except:
+        pass
+    
+    # Search Program Files
+    program_files_dirs = [
+        os.getenv('ProgramFiles'),
+        os.getenv('ProgramFiles(x86)'),
+    ]
+    
+    for prog_dir in program_files_dirs:
+        if not prog_dir or not os.path.exists(prog_dir):
+            continue
+        
+        try:
+            for root, dirs, files in os.walk(prog_dir):
+                # Limit search depth
+                if root.count(os.sep) - prog_dir.count(os.sep) > 3:
+                    continue
+                
+                for file in files:
+                    if file.lower().endswith('.exe'):
+                        if app_name_lower in file.lower() or file.lower().startswith(app_name_lower):
+                            return os.path.join(root, file)
+        except:
+            pass
+    
+    # Search AppData for portable/modern apps
+    local_appdata = os.getenv('LOCALAPPDATA')
+    if local_appdata and os.path.exists(local_appdata):
+        try:
+            for root, dirs, files in os.walk(local_appdata):
+                # Limit search depth
+                if root.count(os.sep) - local_appdata.count(os.sep) > 3:
+                    continue
+                
+                for file in files:
+                    if file.lower().endswith('.exe'):
+                        if app_name_lower in file.lower():
+                            return os.path.join(root, file)
+        except:
+            pass
+    
+    # Search common installation paths
+    common_paths = [
+        f"C:\\Users\\{os.getenv('USERNAME')}\\AppData\\Local\\Programs",
+        "C:\\Users",
+    ]
+    
+    for base_path in common_paths:
+        if not os.path.exists(base_path):
+            continue
+        try:
+            for root, dirs, files in os.walk(base_path):
+                if root.count(os.sep) - base_path.count(os.sep) > 4:
+                    continue
+                
+                for file in files:
+                    if file.lower().endswith('.exe'):
+                        if app_name_lower in file.lower():
+                            return os.path.join(root, file)
+        except:
+            pass
+    
+    return None
+
+def launch_uwp_app(app_name):
+    """Launch UWP app - simplified approach"""
+    try:
+        # Get the package full name
+        ps_script = f"""
+$app = Get-AppxPackage | Where-Object {{$_.Name -like '*{app_name}*'}} | Select-Object -First 1
+if ($app) {{
+    Write-Output $app.PackageFullName
+}} else {{
+    Write-Output "NOT_FOUND"
+}}
+"""
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode == 0:
+            package_full_name = result.stdout.strip()
+            print(f"Debug: PackageFullName: {package_full_name}")
+            
+            if package_full_name and package_full_name != "NOT_FOUND":
+                # Method 1: Try using Start-Process with package URI
+                try:
+                    print(f"Debug: Trying method 1 - Start-Process")
+                    ps_launch = f"""
+$app = Get-AppxPackage | Where-Object {{$_.Name -like '*{app_name}*'}} | Select-Object -First 1
+if ($app) {{
+    $appmanifest = [xml](Get-Content "$($app.InstallLocation)\\AppxManifest.xml" -ErrorAction SilentlyContinue)
+    if ($appmanifest.Package.Applications.Application) {{
+        $appId = if ($appmanifest.Package.Applications.Application -is [array]) {{
+            $appmanifest.Package.Applications.Application[0].Id
+        }} else {{
+            $appmanifest.Package.Applications.Application.Id
+        }}
+        
+        if ($appId) {{
+            Start-Process "explorer.exe" -ArgumentList "shell:appsFolder\\$($app.PackageFullName)!$appId"
+            exit 0
+        }}
+    }}
+}}
+exit 1
+"""
+                    result2 = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command", ps_launch],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if result2.returncode == 0:
+                        print("✓ Launched via Method 1 (Start-Process with AppId)")
+                        return True
+                except Exception as e:
+                    print(f"Method 1 failed: {e}")
+                
+                # Method 2: Use explorer with just PackageFullName
+                try:
+                    print(f"Debug: Trying method 2 - explorer shell:appsFolder")
+                    # This might open app picker, but worth trying
+                    cmd = f'explorer.exe shell:appsFolder\\{package_full_name}'
+                    subprocess.Popen(cmd, shell=True)
+                    print("✓ Launched via Method 2 (explorer shell:appsFolder)")
+                    return True
+                except Exception as e:
+                    print(f"Method 2 failed: {e}")
+                
+                # Method 3: Use UWP protocol if available
+                try:
+                    print(f"Debug: Trying method 3 - UWP protocol")
+                    # For WhatsApp specifically
+                    if "whatsapp" in app_name.lower():
+                        os.startfile("ms-windows-store://pdp/?productid=9NKSQGP7F2NH")
+                        print("✓ Launched via Method 3 (MS Store protocol)")
+                        return True
+                except Exception as e:
+                    print(f"Method 3 failed: {e}")
+                
+        else:
+            print(f"Debug: PackageFullName not found or error")
+    except Exception as e:
+        print(f"PowerShell method failed: {e}")
+    
+    return False
+
+def open_app(app_name):
+    """Opens an application on Windows - tries multiple methods"""
+    app_name_lower = app_name.lower().strip()
+    
+    # Find the app executable
+    app_path = find_app_executable(app_name_lower)
+    
+    if app_path:
+        # Check if it's a UWP app
+        if app_path.startswith("uwp:"):
+            app_key = app_path.replace("uwp:", "")
+            if launch_uwp_app(app_key):
+                print(f"✓ Launched {app_name}")
+                return True
+            else:
+                print(f"✗ Failed to launch UWP app {app_name}")
+                return False
+        
+        # Check if it's a UWP protocol
+        if app_path.startswith("ms-windows"):
+            try:
+                os.startfile(app_path)
+                print(f"✓ Opened {app_name} via UWP protocol")
+                return True
+            except Exception as e:
+                print(f"  UWP protocol failed: {e}")
+                return False
+        
+        # Regular executable
+        try:
+            if os.path.exists(app_path):
+                subprocess.Popen([app_path])
+                print(f"✓ Opened {app_path}")
+                return True
+        except Exception as e:
+            print(f"  Execution failed: {e}")
+    
+    # Fallback: Try direct os.startfile with app name
+    try:
+        os.startfile(app_name_lower)
+        print(f"✓ Opened {app_name} via os.startfile")
+        return True
+    except Exception as e:
+        print(f"  os.startfile failed: {e}")
+    
+    # Try with .exe
+    try:
+        os.startfile(app_name_lower + ".exe")
+        print(f"✓ Opened {app_name}.exe")
+        return True
+    except:
+        pass
+    
+    print(f"✗ Could not find: {app_name}")
+    return False
+
+def get_website_for_app(app_name):
+    """Get official website/web version for an app"""
+    app_lower = app_name.lower().strip()
+    
+    websites = {
+        "whatsapp": "https://web.whatsapp.com/",
+        "spotify": "https://open.spotify.com/",
+        "telegram": "https://web.telegram.org/",
+        "discord": "https://discord.com/",
+        "slack": "https://app.slack.com/",
+        "microsoft store": "https://www.microsoft.com/en-us/store",
+        "store": "https://www.microsoft.com/en-us/store",
+        "github": "https://github.com/",
+        "gmail": "https://mail.google.com/",
+    }
+    
+    return websites.get(app_lower, f"https://www.google.com/search?q={app_name}")
+
+
+def execute_plan(plan):
+    results = []
+
+    for step in plan.get("actions", []):
+        action = step.get("type")
+
+        # =======================
+        # OPEN APPLICATION
+        # =======================
+        if action == "open_application":
+            name = step.get("name", "").strip()
+
+            if open_app(name):
+                results.append(f"Opened {name}")
+            else:
+                # Fallback: Try to open website
+                website = get_website_for_app(name)
+                try:
+                    webbrowser.open(website)
+                    results.append(f"{name} app not found. Opened web version: {website}")
+                except:
+                    results.append(f"Could not open {name} or web version")
+
+        # =======================
+        # OPEN WEBSITE
+        # =======================
+        elif action == "open_website":
+            url = step.get("url", "")
+            try:
+                webbrowser.open(url)
+                results.append(f"Opened website: {url}")
+            except Exception as e:
+                results.append(f"Could not open website: {e}")
+
+        # =======================
+        # WRITE FILE
+        # =======================
+        elif action == "write_file":
+            path = os.path.join(GENERATED_DIR, step["file_name"])
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(step["content"])
+            if platform.system() == "Windows":
+                os.startfile(path)
+            else:
+                subprocess.Popen(["xdg-open", path])
+            results.append(f"Wrote and opened {step['file_name']}")
+
+        # =======================
+        # CREATE PPT (REAL)
+        # =======================
+        elif action == "create_ppt":
+            prs = Presentation()
+
+            title_slide = prs.slides.add_slide(prs.slide_layouts[0])
+            title_slide.shapes.title.text = step["title"]
+
+            for s in step["slides"]:
+                slide = prs.slides.add_slide(prs.slide_layouts[1])
+                slide.shapes.title.text = s["title"]
+                slide.placeholders[1].text = s["content"]
+
+            path = os.path.join(GENERATED_DIR, step["title"] + ".pptx")
+            prs.save(path)
+
+            subprocess.Popen(path, shell=True)
+            results.append("Created and opened PowerPoint")
+
+        # =======================
+        # RESPOND
+        # =======================
+        elif action == "respond":
+            results.append(step["message"])
+
+    return " | ".join(results)
