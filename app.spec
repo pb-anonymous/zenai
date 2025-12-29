@@ -1,0 +1,53 @@
+# -*- mode: python ; coding: utf-8 -*-
+a = Analysis(
+    ['app.py'],
+    pathex=[],
+    binaries=[],
+    datas=[
+        ('static', 'static'),
+        ('generated_ppts', 'generated_ppts'),
+    ],
+    hiddenimports=[
+        'flask',
+        'flask_cors',
+        'pptx',
+        'requests',
+        'webbrowser',
+        'lxml',
+        'lxml.etree',
+        'PIL',
+        'PIL.Image',
+        'encodings',
+        'urllib3',
+        'chardet',
+        'charset_normalizer',
+        'certifi',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludedimports=[],
+    noarchive=False,
+)
+pyz = PYZ(a.pure, a.zipped_data, cipher=None)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name='PPT-Generator',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)

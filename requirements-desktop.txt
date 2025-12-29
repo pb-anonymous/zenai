@@ -1,0 +1,12 @@
+# Requirements for building desktop app
+# Install with: pip install -r requirements-desktop.txt
+
+Flask==2.3.3
+flask-cors==4.0.0
+python-pptx==0.6.21
+requests==2.31.0
+PyInstaller==6.3.0
+pyinstaller-hooks-contrib==2023.9
+
+# For automatic browser opening
+webbrowser
